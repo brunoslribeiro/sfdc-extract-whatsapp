@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -11,14 +12,32 @@ from .exporter import ExportConfig, export_conversations
 from .salesforce_client import SalesforceClient
 
 
+def parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        dt = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise SystemExit(f"Datetime invalido: {value}") from exc
+    if dt.tzinfo is None:
+        raise SystemExit(f"Datetime deve incluir timezone/offset: {value}")
+    return dt
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Extrai conversas de WhatsApp do Salesforce por canal e janela de dias."
+        description="Extrai conversas de WhatsApp do Salesforce por janela temporal."
     )
     p.add_argument("--instance-url", default=os.getenv("SF_INSTANCE_URL"), help="URL da instancia Salesforce, ex.: https://org.my.salesforce.com")
     p.add_argument("--access-token", default=os.getenv("SF_ACCESS_TOKEN"), help="Bearer token OAuth do Salesforce")
     p.add_argument("--channel", default="WhatsApp SAS", help="Nome do canal (ChannelName). Usado pelo fluxo legado com MessagingSession")
-    p.add_argument("--days", type=int, default=30, help="Janela de dias para LAST_N_DAYS")
+    p.add_argument("--days", type=int, default=30, help="Janela relativa em dias quando start/end nao forem informados")
+    p.add_argument("--start-datetime", default=None, help="Inicio da janela em ISO-8601 com timezone, ex.: 2026-04-01T00:00:00Z")
+    p.add_argument("--end-datetime", default=None, help="Fim da janela em ISO-8601 com timezone, ex.: 2026-04-01T01:00:00Z")
+    p.add_argument("--window-size-minutes", type=int, default=None, help="Quebra a janela total em sub-janelas deste tamanho")
     p.add_argument("--api-version", default="62.0", help="Versao da API (ex.: 62.0)")
     p.add_argument("--entries-api", choices=["conversation-data", "connect"], default="conversation-data", help="API usada para baixar entries")
     p.add_argument("--conversation-api-base-url", default=os.getenv("SF_CONVERSATION_API_BASE_URL", "https://api.salesforce.com/platform/engagement/v1.0"), help="Base URL da Conversation Data API")
@@ -78,6 +97,8 @@ def main() -> None:
         raise SystemExit("--instance-url, env SF_INSTANCE_URL, ou derivacao a partir de --auth-url e obrigatorio")
 
     out_dir = Path(args.out)
+    start_datetime = parse_iso_datetime(args.start_datetime)
+    end_datetime = parse_iso_datetime(args.end_datetime)
 
     client = SalesforceClient(
         instance_url=instance_url,
@@ -93,6 +114,9 @@ def main() -> None:
         channel=args.channel,
         days=args.days,
         out_dir=out_dir,
+        start_datetime=start_datetime,
+        end_datetime=end_datetime,
+        window_size_minutes=args.window_size_minutes,
         api_version=args.api_version,
         entries_api=args.entries_api,
         record_limit=(args.record_limit if args.record_limit is not None else args.page_size),

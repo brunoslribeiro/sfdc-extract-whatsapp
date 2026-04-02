@@ -16,6 +16,9 @@ class ExportConfig:
     channel: str
     days: int
     out_dir: Path
+    start_datetime: Optional[datetime] = None
+    end_datetime: Optional[datetime] = None
+    window_size_minutes: Optional[int] = None
     api_version: str = "62.0"
     entries_api: str = "conversation-data"
     record_limit: Optional[int] = None
@@ -186,27 +189,51 @@ def parse_sf_dt(value: Optional[str]) -> Optional[datetime]:
         return None
 
 
-def build_conversation_query(days: int) -> str:
+def ensure_utc(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def format_soql_datetime(dt: datetime) -> str:
+    return ensure_utc(dt).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def build_conversation_query(window_start: datetime, window_end: datetime) -> str:
+    start_str = format_soql_datetime(window_start)
+    end_str = format_soql_datetime(window_end)
     return (
         "SELECT Id, StartTime, EndTime, LastModifiedDate, ConversationIdentifier "
-        f"FROM Conversation WHERE LastModifiedDate = LAST_N_DAYS:{int(days)}"
+        f"FROM Conversation WHERE LastModifiedDate >= {start_str} AND LastModifiedDate < {end_str}"
     )
 
 
-def build_messaging_session_query(channel: str, days: int, include_updated: bool, use_systemmodstamp: bool) -> str:
+def build_messaging_session_query(
+    channel: str,
+    window_start: datetime,
+    window_end: datetime,
+    include_updated: bool,
+    use_systemmodstamp: bool,
+) -> str:
     safe_channel = channel.replace("'", "\\'")
     date_field = "SystemModstamp" if use_systemmodstamp else "LastModifiedDate"
+    start_str = format_soql_datetime(window_start)
+    end_str = format_soql_datetime(window_end)
     select_fields = (
         "Id, ChannelName, Conversation.ConversationIdentifier, CreatedDate, "
         f"{date_field}, MessagingEndUser.Name, MessagingEndUser.MessagingPlatformKey"
     )
     if include_updated:
         where = (
-            f"ChannelName = '{safe_channel}' AND (CreatedDate = LAST_N_DAYS:{int(days)} "
-            f"OR {date_field} = LAST_N_DAYS:{int(days)})"
+            f"ChannelName = '{safe_channel}' AND "
+            f"((CreatedDate >= {start_str} AND CreatedDate < {end_str}) "
+            f"OR ({date_field} >= {start_str} AND {date_field} < {end_str}))"
         )
     else:
-        where = f"ChannelName = '{safe_channel}' AND CreatedDate = LAST_N_DAYS:{int(days)}"
+        where = (
+            f"ChannelName = '{safe_channel}' AND "
+            f"(CreatedDate >= {start_str} AND CreatedDate < {end_str})"
+        )
     return f"SELECT {select_fields} FROM MessagingSession WHERE {where}"
 
 
@@ -223,6 +250,33 @@ def _chunked(values: list[str], size: int) -> list[list[str]]:
     return [values[i:i + size] for i in range(0, len(values), size)]
 
 
+def compute_execution_window(config: ExportConfig) -> tuple[datetime, datetime]:
+    if config.start_datetime and config.end_datetime:
+        start_dt = ensure_utc(config.start_datetime)
+        end_dt = ensure_utc(config.end_datetime)
+    elif config.start_datetime or config.end_datetime:
+        raise ValueError("start_datetime e end_datetime devem ser informados juntos")
+    else:
+        end_dt = datetime.now(timezone.utc)
+        start_dt = end_dt - timedelta(days=config.days)
+    if start_dt >= end_dt:
+        raise ValueError("start_datetime deve ser menor que end_datetime")
+    return start_dt, end_dt
+
+
+def split_windows(window_start: datetime, window_end: datetime, window_size_minutes: Optional[int]) -> list[tuple[datetime, datetime]]:
+    if not window_size_minutes or window_size_minutes <= 0:
+        return [(window_start, window_end)]
+    windows: list[tuple[datetime, datetime]] = []
+    current = window_start
+    delta = timedelta(minutes=window_size_minutes)
+    while current < window_end:
+        next_end = min(current + delta, window_end)
+        windows.append((current, next_end))
+        current = next_end
+    return windows
+
+
 def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict:
     import csv
 
@@ -231,10 +285,10 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
     csv_root_dir = config.out_dir / "csv"
     ensure_dir(json_root_dir)
     ensure_dir(csv_root_dir)
-    window_end = datetime.now(timezone.utc)
-    window_start = window_end - timedelta(days=config.days)
+    window_start, window_end = compute_execution_window(config)
     start_timestamp_ms = int(window_start.timestamp() * 1000)
     end_timestamp_ms = int(window_end.timestamp() * 1000)
+    windows = split_windows(window_start, window_end, config.window_size_minutes)
     run_id = "run_" + datetime.now().strftime("%Y%m%d_%H%M%S")
     state_root = Path(config.state_dir or (config.out_dir / "state"))
     ensure_dir(state_root)
@@ -262,109 +316,142 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
     identifiers: list[str] = []
     seen: set[str] = set()
     conversation_meta: dict[str, dict[str, object]] = {}
+    windows_rows: list[dict[str, object]] = []
     created_within = 0
     modified_within = 0
     updated_only = 0
 
     if config.entries_api == "conversation-data":
-        query = build_conversation_query(config.days)
-        print(f"Consultando SOQL em Conversation pelos últimos {config.days} dia(s)...")
-        records = client.soql(query)
-
-        for r in records:
-            cid = r.get("ConversationIdentifier")
-            if cid and cid not in seen:
-                seen.add(cid)
-                identifiers.append(cid)
-            if cid:
-                conversation_meta[cid] = {
-                    "conversationIdentifier": cid,
-                    "sourceId": r.get("Id"),
-                    "startTime": r.get("StartTime"),
-                    "endTime": r.get("EndTime"),
-                    "lastModifiedDate": r.get("LastModifiedDate"),
-                    "sourceObject": "Conversation",
-                }
-
-            start_dt = parse_sf_dt(r.get("StartTime"))
-            modified_dt = parse_sf_dt(r.get("LastModifiedDate"))
-            swin = start_dt is not None and start_dt >= window_start
-            mwin = modified_dt is not None and modified_dt >= window_start
-            if swin:
-                created_within += 1
-            if mwin:
-                modified_within += 1
-            if (not swin) and mwin:
-                updated_only += 1
-
-        if config.enrich_messaging_sessions and identifiers:
-            print("Consultando MessagingSession para enriquecimento opcional...")
-            enriched_rows: list[tuple] = []
-            for chunk in _chunked(identifiers, 200):
-                for r in client.soql(build_sessions_by_identifier_query(chunk)):
-                    conv = r.get("Conversation") or {}
-                    end_user = r.get("MessagingEndUser") or {}
-                    enriched_rows.append((
-                        r.get("Id"),
-                        r.get("ChannelName"),
-                        conv.get("ConversationIdentifier") or "",
-                        r.get("CreatedDate"),
-                        r.get("LastModifiedDate"),
-                        end_user.get("Name") if isinstance(end_user, dict) else "",
-                        end_user.get("MessagingPlatformKey") if isinstance(end_user, dict) else "",
-                    ))
-            sessions_rows = enriched_rows
-    else:
-        query = build_messaging_session_query(
-            config.channel,
-            config.days,
-            include_updated=config.include_updated,
-            use_systemmodstamp=config.use_systemmodstamp,
+        print(
+            f"Consultando SOQL em Conversation de {format_soql_datetime(window_start)} "
+            f"até {format_soql_datetime(window_end)} em {len(windows)} janela(s)..."
         )
-        print(f"Consultando SOQL por canal '{config.channel}' e últimos {config.days} dia(s)...")
-        records = client.soql(query)
+    else:
+        print(
+            f"Consultando SOQL por canal '{config.channel}' de {format_soql_datetime(window_start)} "
+            f"até {format_soql_datetime(window_end)} em {len(windows)} janela(s)..."
+        )
 
-        for r in records:
-            conv = r.get("Conversation") or {}
-            cid = conv.get("ConversationIdentifier")
-            end_user = r.get("MessagingEndUser") or {}
-            end_user_name = end_user.get("Name") if isinstance(end_user, dict) else None
-            end_user_key = end_user.get("MessagingPlatformKey") if isinstance(end_user, dict) else None
-            if cid and cid not in seen:
-                seen.add(cid)
-                identifiers.append(cid)
-            created_dt = parse_sf_dt(r.get("CreatedDate"))
-            mod_field = "SystemModstamp" if config.use_systemmodstamp else "LastModifiedDate"
-            modified_dt = parse_sf_dt(r.get(mod_field))
-            if cid:
-                conversation_meta[cid] = {
-                    "conversationIdentifier": cid,
-                    "sourceId": r.get("Id"),
-                    "createdDate": r.get("CreatedDate"),
-                    "lastModifiedDate": r.get(mod_field),
-                    "channel": r.get("ChannelName"),
-                    "endUserName": end_user_name or "",
-                    "endUserMessagingPlatformKey": end_user_key or "",
-                    "sourceObject": "MessagingSession",
-                }
-            cwin = created_dt is not None and created_dt >= window_start
-            mwin = modified_dt is not None and modified_dt >= window_start
-            if cwin:
-                created_within += 1
-            if mwin:
-                modified_within += 1
-            if (not cwin) and mwin:
-                updated_only += 1
+    for idx, (chunk_start, chunk_end) in enumerate(windows, start=1):
+        if config.entries_api == "conversation-data":
+            window_records = client.soql(build_conversation_query(chunk_start, chunk_end))
+        else:
+            window_records = client.soql(
+                build_messaging_session_query(
+                    config.channel,
+                    chunk_start,
+                    chunk_end,
+                    include_updated=config.include_updated,
+                    use_systemmodstamp=config.use_systemmodstamp,
+                )
+            )
 
-            sessions_rows.append((
-                r.get("Id"),
-                r.get("ChannelName"),
-                cid or "",
-                r.get("CreatedDate"),
-                r.get(mod_field),
-                end_user_name or "",
-                end_user_key or "",
-            ))
+        windows_rows.append(
+            {
+                "index": idx,
+                "windowStart": format_soql_datetime(chunk_start),
+                "windowEnd": format_soql_datetime(chunk_end),
+                "sourceRecords": len(window_records),
+            }
+        )
+        records.extend(window_records)
+
+        if config.entries_api == "conversation-data":
+            for r in window_records:
+                cid = r.get("ConversationIdentifier")
+                if cid and cid not in seen:
+                    seen.add(cid)
+                    identifiers.append(cid)
+                if cid:
+                    candidate_last_modified = r.get("LastModifiedDate")
+                    current_last_modified = conversation_meta.get(cid, {}).get("lastModifiedDate")
+                    candidate_dt = parse_sf_dt(candidate_last_modified if isinstance(candidate_last_modified, str) else None)
+                    current_dt = parse_sf_dt(current_last_modified if isinstance(current_last_modified, str) else None)
+                    if current_dt is None or (candidate_dt is not None and candidate_dt > current_dt):
+                        conversation_meta[cid] = {
+                            "conversationIdentifier": cid,
+                            "sourceId": r.get("Id"),
+                            "startTime": r.get("StartTime"),
+                            "endTime": r.get("EndTime"),
+                            "lastModifiedDate": candidate_last_modified,
+                            "sourceObject": "Conversation",
+                        }
+
+                start_dt = parse_sf_dt(r.get("StartTime"))
+                modified_dt = parse_sf_dt(r.get("LastModifiedDate"))
+                swin = start_dt is not None and start_dt >= window_start
+                mwin = modified_dt is not None and modified_dt >= window_start
+                if swin:
+                    created_within += 1
+                if mwin:
+                    modified_within += 1
+                if (not swin) and mwin:
+                    updated_only += 1
+        else:
+            for r in window_records:
+                conv = r.get("Conversation") or {}
+                cid = conv.get("ConversationIdentifier")
+                end_user = r.get("MessagingEndUser") or {}
+                end_user_name = end_user.get("Name") if isinstance(end_user, dict) else None
+                end_user_key = end_user.get("MessagingPlatformKey") if isinstance(end_user, dict) else None
+                if cid and cid not in seen:
+                    seen.add(cid)
+                    identifiers.append(cid)
+                created_dt = parse_sf_dt(r.get("CreatedDate"))
+                mod_field = "SystemModstamp" if config.use_systemmodstamp else "LastModifiedDate"
+                modified_dt = parse_sf_dt(r.get(mod_field))
+                if cid:
+                    candidate_last_modified = r.get(mod_field)
+                    current_last_modified = conversation_meta.get(cid, {}).get("lastModifiedDate")
+                    candidate_dt = parse_sf_dt(candidate_last_modified if isinstance(candidate_last_modified, str) else None)
+                    current_dt = parse_sf_dt(current_last_modified if isinstance(current_last_modified, str) else None)
+                    if current_dt is None or (candidate_dt is not None and candidate_dt > current_dt):
+                        conversation_meta[cid] = {
+                            "conversationIdentifier": cid,
+                            "sourceId": r.get("Id"),
+                            "createdDate": r.get("CreatedDate"),
+                            "lastModifiedDate": candidate_last_modified,
+                            "channel": r.get("ChannelName"),
+                            "endUserName": end_user_name or "",
+                            "endUserMessagingPlatformKey": end_user_key or "",
+                            "sourceObject": "MessagingSession",
+                        }
+                cwin = created_dt is not None and created_dt >= window_start
+                mwin = modified_dt is not None and modified_dt >= window_start
+                if cwin:
+                    created_within += 1
+                if mwin:
+                    modified_within += 1
+                if (not cwin) and mwin:
+                    updated_only += 1
+
+                sessions_rows.append((
+                    r.get("Id"),
+                    r.get("ChannelName"),
+                    cid or "",
+                    r.get("CreatedDate"),
+                    r.get(mod_field),
+                    end_user_name or "",
+                    end_user_key or "",
+                ))
+
+    if config.enrich_messaging_sessions and config.entries_api == "conversation-data" and identifiers:
+        print("Consultando MessagingSession para enriquecimento opcional...")
+        enriched_rows: list[tuple] = []
+        for chunk in _chunked(identifiers, 200):
+            for r in client.soql(build_sessions_by_identifier_query(chunk)):
+                conv = r.get("Conversation") or {}
+                end_user = r.get("MessagingEndUser") or {}
+                enriched_rows.append((
+                    r.get("Id"),
+                    r.get("ChannelName"),
+                    conv.get("ConversationIdentifier") or "",
+                    r.get("CreatedDate"),
+                    r.get("LastModifiedDate"),
+                    end_user.get("Name") if isinstance(end_user, dict) else "",
+                    end_user.get("MessagingPlatformKey") if isinstance(end_user, dict) else "",
+                ))
+        sessions_rows = enriched_rows
 
     total_records = len(records)
     skipped_rows: list[dict[str, object]] = []
@@ -420,6 +507,10 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
             "recordLimit": config.record_limit,
             "startTimestamp": start_timestamp_ms,
             "endTimestamp": end_timestamp_ms,
+            "windowStart": format_soql_datetime(window_start),
+            "windowEnd": format_soql_datetime(window_end),
+            "windowCount": len(windows),
+            "windowSizeMinutes": config.window_size_minutes,
             "outDir": str(config.out_dir),
             "jsonRootDir": str(json_root_dir),
             "csvRootDir": str(csv_root_dir),
@@ -447,6 +538,7 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
 
     write_json(run_state_dir / "seen_conversations.json", seen_rows)
     write_json(run_state_dir / "skipped_conversations.json", skipped_rows)
+    write_json(run_state_dir / "windows.json", windows_rows)
 
     if dump_sessions_csv_path and sessions_rows:
         csv_path = dump_sessions_csv_path

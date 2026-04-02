@@ -1,0 +1,544 @@
+DOCUMENTACAO COMPLETA DO PROJETO
+SFDC WhatsApp Extractor
+
+1. OBJETIVO
+
+Este projeto extrai conversas do Salesforce, salva os payloads localmente,
+gera formatos auxiliares para auditoria e BI, importa os dados para MongoDB
+e disponibiliza uma interface web simples para consulta das conversas.
+
+O fluxo principal hoje usa a Conversation Data API para baixar as entries de
+cada conversa. A descoberta das conversas a baixar e a estrategia incremental
+ficam no exportador.
+
+
+2. PONTOS DE ENTRADA
+
+2.1 main.py
+
+Responsavel pela exportacao.
+
+Faz o bootstrap de src/ e chama:
+- sfdc_whatsapp_export.cli.main
+
+2.2 mongo_import.py
+
+Responsavel por importar os JSONs exportados para MongoDB.
+
+Faz o bootstrap de src/ e chama:
+- sfdc_whatsapp_export.import_mongo_cli.main
+
+2.3 viewer.py
+
+Responsavel por subir a interface web Flask para visualizacao local.
+
+Faz o bootstrap de src/ e chama:
+- sfdc_whatsapp_export.viewer_app.main
+
+
+3. ESTRUTURA PRINCIPAL DE CODIGO
+
+3.1 src/sfdc_whatsapp_export/auth.py
+
+Realiza autenticacao OAuth por client credentials quando o access token nao e
+fornecido manualmente.
+
+3.2 src/sfdc_whatsapp_export/cli.py
+
+Define a CLI da exportacao.
+
+Responsabilidades:
+- ler variaveis do .env
+- montar argumentos da linha de comando
+- obter token OAuth quando necessario
+- instanciar SalesforceClient
+- montar ExportConfig
+- disparar export_conversations
+
+3.3 src/sfdc_whatsapp_export/salesforce_client.py
+
+Cliente HTTP para Salesforce.
+
+Responsabilidades:
+- chamadas SOQL com paginacao por nextRecordsUrl
+- chamadas da Conversation Data API
+- chamadas do endpoint legado Connect
+- fallback opcional da API nova para Connect
+- limitacao de taxa por minuto
+- retry em HTTP 429 com Retry-After e backoff
+- consolidacao de nextPageToken nas entries
+
+3.4 src/sfdc_whatsapp_export/exporter.py
+
+Arquivo central do projeto.
+
+Responsabilidades:
+- construir a query de descoberta
+- calcular a janela temporal
+- controlar estado incremental por conversa
+- decidir fila de download
+- baixar payloads de conversas
+- escrever JSON, NDJSON e CSV
+- gravar logs tecnicos
+- manter stage por execucao
+- atualizar estado consolidado durante a execucao
+
+3.5 src/sfdc_whatsapp_export/mongo_utils.py
+
+Responsavel pela importacao para MongoDB.
+
+Responsabilidades:
+- criar indices
+- localizar os JSONs exportados
+- ler sessions.csv para enriquecimento opcional
+- popular whatsapp_messages
+- popular whatsapp_conversations com resumo de conversa
+
+3.6 src/sfdc_whatsapp_export/import_mongo_cli.py
+
+CLI da importacao para MongoDB.
+
+3.7 src/sfdc_whatsapp_export/viewer_app.py
+
+Aplicacao Flask para leitura das colecoes no MongoDB e visualizacao das
+conversas.
+
+
+4. FLUXO FUNCIONAL
+
+4.1 Descoberta das conversas
+
+No modo principal, o projeto consulta o objeto Conversation via SOQL:
+
+SELECT Id, StartTime, EndTime, LastModifiedDate, ConversationIdentifier
+FROM Conversation
+WHERE LastModifiedDate = LAST_N_DAYS:<dias>
+
+Essa query identifica quais conversas foram alteradas dentro da janela.
+
+4.2 Fila incremental
+
+Depois de descobrir as conversas, o exportador compara cada
+ConversationIdentifier com o arquivo de estado consolidado:
+
+- se a conversa nao existe no estado, entra na fila
+- se LastModifiedDate atual > lastModifiedDate salvo no estado, entra na fila
+- se LastModifiedDate atual <= lastModifiedDate salvo no estado, ela e ignorada
+
+Isso evita baixar novamente conversas que ja foram processadas sem mudanca.
+
+4.3 Download das entries
+
+Para cada conversa na fila, o projeto chama:
+
+GET https://api.salesforce.com/platform/engagement/v1.0/conversation-entries
+
+Parametros principais:
+- conversationIdentifier
+- recordLimit
+- startTimestamp
+- endTimestamp
+- pageToken, quando houver paginacao
+
+Se a org retornar nextPageToken, o cliente consolida todas as paginas em um
+payload unico antes de salvar.
+
+4.4 Persistencia por conversa
+
+Para cada conversa baixada com sucesso:
+- grava o JSON bruto
+- escreve no NDJSON, se habilitado
+- escreve no CSV, se habilitado
+- atualiza imediatamente o estado consolidado
+- atualiza o stage da execucao
+
+Essa ordem e importante porque permite retomada real em caso de crash.
+
+
+5. MODO INCREMENTAL E RETOMADA
+
+5.1 Estado consolidado
+
+O arquivo principal de estado fica em:
+
+output/state/latest_state.json
+
+Ele e indexado por ConversationIdentifier.
+
+Cada item do estado pode guardar:
+- conversationIdentifier
+- sourceId
+- startTime ou createdDate
+- endTime
+- lastModifiedDate
+- sourceObject
+- lastDownloadedAt
+- lastRunId
+- messageCount
+- outputFile
+
+5.2 Stage por execucao
+
+Cada execucao gera uma pasta propria:
+
+output/state/run_YYYYmmdd_HHMMSS/
+
+Arquivos do stage:
+- seen_conversations.json
+- skipped_conversations.json
+- downloaded_conversations.json
+- failed_conversations.json
+- summary.json
+
+5.3 Retomada apos falha
+
+Hoje o projeto suporta retomada pratica.
+
+Como funciona:
+- o estado consolidado e regravado durante a execucao
+- se o processo cair depois de algumas conversas concluidas, essas conversas ja
+  ficam no latest_state.json
+- na proxima execucao, o exportador pula essas conversas e continua nas
+  pendentes
+
+Importante:
+- uma conversa so entra no estado depois que o JSON dela foi escrito e os
+  artefatos auxiliares daquela conversa foram processados
+- se a conversa falhar, ela nao e marcada como concluida
+- se falhar, ela aparece de novo em execucoes futuras
+
+5.4 Onde ver falhas
+
+Falhas ficam registradas em:
+- output/logs/run_YYYYmmdd_HHMMSS/errors.csv
+- output/state/run_YYYYmmdd_HHMMSS/failed_conversations.json
+
+
+6. ORGANIZACAO DOS ARTEFATOS
+
+6.1 Pasta raiz de saida
+
+Por padrao:
+
+output/
+
+6.2 JSONs por execucao
+
+Ficam em:
+
+output/json/run_YYYYmmdd_HHMMSS/
+
+Conteudo:
+- um arquivo por conversa
+- opcionalmente all_conversations.ndjson
+
+6.3 CSVs por execucao
+
+Ficam em:
+
+output/csv/run_YYYYmmdd_HHMMSS/
+
+Conteudo:
+- all_conversations.csv, quando habilitado
+- sessions.csv, quando enrichment e dump-sessions estao habilitados
+
+6.4 Estado
+
+Fica em:
+
+output/state/
+
+Conteudo:
+- latest_state.json
+- run_YYYYmmdd_HHMMSS/
+
+6.5 Logs tecnicos
+
+Ficam em:
+
+output/logs/run_YYYYmmdd_HHMMSS/
+
+Conteudo tipico:
+- identifiers.txt
+- params.json
+- errors.csv
+- summary.json
+- sessions.csv, quando houver
+
+
+7. FORMATO DO CSV
+
+O CSV foi pensado para importacao posterior em banco de dados, planilhas e BI.
+
+7.1 Regras aplicadas
+
+- campos textuais sao normalizados para linha unica
+- colunas JSON sao serializadas em linha unica
+- timestamps numericos originais sao mantidos
+- colunas UTC auxiliares sao geradas
+
+7.2 Colunas principais
+
+- conversationId
+- identifier
+- entryType
+- messageText
+- messageType
+- messageReason
+- formatType
+- templateName
+- attachmentCount
+- senderRole
+- senderAppType
+- senderSubject
+- clientTimestamp
+- clientTimestampUtc
+- serverReceivedTimestamp
+- serverReceivedTimestampUtc
+- transcriptedTimestamp
+- transcriptedTimestampUtc
+- sortTimestamp
+- sortTimestampUtc
+- relatedRecordsJson
+- recipientsJson
+- rawEntryJson
+
+7.3 Colunas UTC auxiliares
+
+As colunas abaixo facilitam ingestao em banco e ferramentas de ETL:
+
+- clientTimestampUtc
+- serverReceivedTimestampUtc
+- transcriptedTimestampUtc
+- sortTimestampUtc
+
+Formato:
+- ISO-8601 UTC
+- exemplo: 2024-05-20T21:32:50.841000Z
+
+
+8. MONGODB
+
+8.1 Colecoes
+
+Colecao de mensagens:
+- whatsapp_messages
+
+Colecao de conversas:
+- whatsapp_conversations
+
+8.2 Dados gravados em whatsapp_messages
+
+- _id
+- conversationId
+- identifier
+- entryType
+- messageText
+- attachmentCount
+- clientTimestamp
+- serverReceivedTimestamp
+- transcriptedTimestamp
+- sender
+- recipients
+- relatedRecords
+- sortTimestamp
+- rawEntry
+
+8.3 Dados gravados em whatsapp_conversations
+
+- conversationId
+- messagesCount
+- firstMessageTimestamp
+- lastMessageTimestamp
+- lastMessageText
+- lastMessageType
+- lastSenderRole
+- endUserName
+- endUserMessagingPlatformKey
+- lastEndUserTimestamp
+- participants
+- entryTypes
+- hasAttachments
+- hasTemplates
+
+8.4 Indices criados
+
+- whatsapp_messages: conversationId + sortTimestamp
+- whatsapp_messages: identifier
+- whatsapp_messages: _id unico
+- whatsapp_conversations: conversationId unico
+- whatsapp_conversations: endUserMessagingPlatformKey
+- whatsapp_conversations: lastEndUserTimestamp
+
+8.5 Como o importador encontra os JSONs
+
+Se voce informar:
+
+python mongo_import.py --dir output ...
+
+o importador:
+- procura output/json
+- se houver subpastas run_*, escolhe a mais recente
+- importa os JSONs dessa execucao mais recente
+
+
+9. VIEWER
+
+9.1 Tecnologia
+
+- Flask
+- leitura direta no MongoDB
+
+9.2 O que o viewer faz
+
+- lista conversas em ordem decrescente de lastMessageTimestamp
+- busca por conversationId
+- busca por texto do ultimo evento
+- busca por numero/chave da plataforma
+- mostra badges de entryTypes
+- mostra flags de anexo e template
+- abre a conversa em formato de chat
+- permite filtrar por entryType
+- permite ocultar eventos de sistema
+- mostra rawEntry formatado para auditoria
+
+9.3 URL padrao
+
+http://127.0.0.1:5000/
+
+
+10. CONFIGURACAO DE AMBIENTE
+
+10.1 Opcao A: token pronto
+
+Variaveis tipicas:
+- SF_INSTANCE_URL
+- SF_ACCESS_TOKEN
+
+10.2 Opcao B: OAuth client credentials
+
+Variaveis tipicas:
+- SF_AUTH_URL
+- SF_CLIENT_ID
+- SF_CLIENT_SECRET
+- SF_INSTANCE_URL, opcional se quiser evitar derivacao
+
+10.3 Variaveis adicionais uteis
+
+- SF_SCOPE
+- SF_AUDIENCE
+- SF_CONVERSATION_API_BASE_URL
+- MONGO_URI
+- MONGO_DB
+- MONGO_MESSAGES_COLLECTION
+- MONGO_CONVERSATIONS_COLLECTION
+
+
+11. RATE LIMIT
+
+O cliente respeita limitacao de taxa por minuto.
+
+Parametro:
+- --max-requests-per-minute
+
+Default atual:
+- 90
+
+Comportamento:
+- aplica intervalo minimo entre requests
+- em HTTP 429 faz retry com Retry-After quando disponivel
+- se necessario usa backoff adicional
+
+
+12. COMANDOS PRINCIPAIS
+
+12.1 Exportacao simples D-1
+
+Local:
+
+python main.py --days 1 --record-limit 1000 --no-legacy-fallback
+
+Docker:
+
+docker compose run --rm exporter --days 1 --record-limit 1000 --no-legacy-fallback
+
+12.2 Exportacao D-1 com CSV
+
+Local:
+
+python main.py --days 1 --record-limit 1000 --entries-csv all_conversations.csv --no-legacy-fallback
+
+Docker:
+
+docker compose run --rm exporter --days 1 --record-limit 1000 --entries-csv all_conversations.csv --no-legacy-fallback
+
+12.3 Exportacao D-1 com enrichment opcional
+
+python main.py --days 1 --record-limit 1000 --with-session-enrichment --dump-sessions sessions.csv --no-legacy-fallback
+
+12.4 Exportacao D-1 com CSV e enrichment
+
+python main.py --days 1 --record-limit 1000 --entries-csv all_conversations.csv --with-session-enrichment --dump-sessions sessions.csv --no-legacy-fallback
+
+12.5 Importacao Mongo
+
+python mongo_import.py --dir output --mongo-uri "mongodb://localhost:27017" --mongo-db sfdc_whatsapp
+
+12.6 Viewer
+
+python viewer.py
+
+
+13. OBSERVACOES IMPORTANTES
+
+13.1 Sobre o canal
+
+No fluxo principal conversation-data, o projeto nao aplica filtro real por
+channel na descoberta via Conversation.
+
+Por isso:
+- o params.json nao deve sugerir filtro de canal nesse modo
+- o campo channel so deve existir no fluxo legado
+
+13.2 Sobre a primeira execucao
+
+A primeira execucao em uma janela tende a baixar mais dados, porque o estado
+ainda nao existe ou esta vazio.
+
+13.3 Sobre mudanca de layout de saida
+
+Como os JSONs e CSVs agora ficam por execucao:
+- output/json/run_*/
+- output/csv/run_*/
+
+isso melhora rastreabilidade e auditoria.
+
+13.4 Sobre importacao
+
+Se quiser importar uma execucao especifica em vez da mais recente, informe
+diretamente a pasta da execucao:
+
+python mongo_import.py --dir output/json/run_YYYYmmdd_HHMMSS --mongo-uri "mongodb://localhost:27017" --mongo-db sfdc_whatsapp
+
+
+14. LIMITACOES
+
+- o filtro por canal ainda nao e aplicado no fluxo principal da nova API
+- o projeto depende de permissao de acesso a Conversation e a Conversation Data API
+- se o enriquecimento opcional for usado, tambem depende de acesso a MessagingSession
+- a interface web e uma ferramenta de auditoria local, nao uma aplicacao pronta para producao
+
+
+15. RESUMO EXECUTIVO
+
+Hoje o projeto:
+- descobre conversas por Conversation
+- baixa entries pela Conversation Data API
+- grava estado incremental por ConversationIdentifier
+- retoma bem apos falhas de processo
+- organiza saidas por execucao
+- gera CSV pronto para ETL com colunas UTC auxiliares
+- importa para MongoDB
+- oferece viewer local para auditoria
+
+Esse arquivo serve como documentacao operacional e tecnica completa do projeto.
