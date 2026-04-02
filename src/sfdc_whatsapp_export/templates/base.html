@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="pt-br">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Auditoria WhatsApp</title>
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, Segoe UI, Roboto, Oxygen, Ubuntu, Cantarell, Arial, sans-serif; margin: 0; background: #ece5dd; }
+      header { background: #075e54; color: white; padding: 12px 16px; box-shadow: 0 1px 2px rgba(0,0,0,0.2); }
+      a { color: #075e54; text-decoration: none; }
+      .container { padding: 16px; }
+      .chat { max-width: 860px; margin: 0 auto; background: #e5ddd5; padding: 8px; border-radius: 8px; }
+      .bubble { display: inline-block; padding: 8px 10px; margin: 4px 0; border-radius: 8px; max-width: 75%; position: relative; }
+      .from-user { background: #dcf8c6; align-self: flex-end; }
+      .from-agent { background: #fff; align-self: flex-start; }
+      .from-system { background: #f0f0f0; color: #666; font-style: italic; }
+      .row { display: flex; }
+      .left { justify-content: flex-start; }
+      .right { justify-content: flex-end; }
+      .meta { font-size: 11px; color: #666; margin-top: 2px; text-align: right; }
+      .list { max-width: 860px; margin: 0 auto; }
+      .card { background: white; padding: 12px; margin: 8px 0; border-radius: 8px; }
+      input[type=text] { padding: 8px; width: 60%; }
+      button { padding: 8px 12px; background: #128c7e; color: white; border: 0; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>Auditoria WhatsApp</strong>
+    </header>
+    <div class="container">
+      {% block content %}{% endblock %}
+    </div>
+  </body>
+  </html>
+

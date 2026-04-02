@@ -1,0 +1,66 @@
+services:
+  mongo:
+    image: mongo:7
+    container_name: sfdc_whatsapp_mongo
+    restart: unless-stopped
+    volumes:
+      - mongo_data:/data/db
+
+  viewer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: sfdc_whatsapp_viewer
+    restart: unless-stopped
+    depends_on:
+      - mongo
+    env_file:
+      - .env
+    environment:
+      HOST: 0.0.0.0
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB: ${MONGO_DB:-sfdc_whatsapp}
+      MONGO_MESSAGES_COLLECTION: ${MONGO_MESSAGES_COLLECTION:-whatsapp_messages}
+      MONGO_CONVERSATIONS_COLLECTION: ${MONGO_CONVERSATIONS_COLLECTION:-whatsapp_conversations}
+      PORT: 5000
+    command: ["python", "viewer.py"]
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./output:/app/output
+
+  exporter:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["tools"]
+    depends_on:
+      - mongo
+    env_file:
+      - .env
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+    entrypoint: ["python", "main.py"]
+    volumes:
+      - ./output:/app/output
+
+  importer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    profiles: ["tools"]
+    depends_on:
+      - mongo
+    env_file:
+      - .env
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+      MONGO_DB: ${MONGO_DB:-sfdc_whatsapp}
+      MONGO_MESSAGES_COLLECTION: ${MONGO_MESSAGES_COLLECTION:-whatsapp_messages}
+      MONGO_CONVERSATIONS_COLLECTION: ${MONGO_CONVERSATIONS_COLLECTION:-whatsapp_conversations}
+    entrypoint: ["python", "mongo_import.py"]
+    volumes:
+      - ./output:/app/output
+
+volumes:
+  mongo_data:

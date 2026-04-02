@@ -1,0 +1,33 @@
+{% extends 'base.html' %}
+{% block content %}
+  <div class="list">
+    <form method="get">
+      <input type="text" name="q" placeholder="Buscar conversationId" value="{{ q }}" style="width:300px;" />
+      <input type="text" name="phone" placeholder="Buscar por número" value="{{ phone }}" style="width:200px;"/>
+      <input type="text" name="text" placeholder="Buscar no último texto" value="{{ text }}" style="width:240px;"/>
+      <button type="submit">Buscar</button>
+    </form>
+    <p>Mostrando até {{ limit }} conversas.</p>
+    {% for c in items %}
+      <div class="card">
+        <div>
+          <strong>{{ c.conversationId }}</strong>
+        </div>
+        <div>Contato: {{ c.endUserName or '-' }} | Número: {{ c.endUserMessagingPlatformKey or '-' }}</div>
+        <div>Mensagens: {{ c.messagesCount or '-' }} | Última: {{ c.lastMessageTimestamp | ts_br }}</div>
+        <div>Último texto: {{ c.lastMessageText or '-' }}</div>
+        <div>Último tipo: {{ c.lastMessageType or '-' }} | Último remetente: {{ c.lastSenderRole or '-' }}</div>
+        <div>Eventos: {{ (c.entryTypes or []) | join(', ') }}</div>
+        <div>
+          {% if c.hasAttachments %}<span>[anexos]</span>{% endif %}
+          {% if c.hasTemplates %}<span>[templates]</span>{% endif %}
+        </div>
+        <div>
+          <a href="{{ url_for('conversation', conversation_id=c.conversationId) }}">Abrir</a>
+        </div>
+      </div>
+    {% else %}
+      <p>Nenhuma conversa encontrada.</p>
+    {% endfor %}
+  </div>
+{% endblock %}

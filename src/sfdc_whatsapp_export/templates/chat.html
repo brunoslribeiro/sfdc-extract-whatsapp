@@ -1,0 +1,70 @@
+{% extends 'base.html' %}
+{% block content %}
+  <div class="chat">
+    <h3>Conversa {{ conversation_id }}</h3>
+    {% if conversation %}
+      <p>
+        <strong>Contato:</strong> {{ conversation.endUserName or '-' }} |
+        <strong>Número:</strong> {{ conversation.endUserMessagingPlatformKey or '-' }} |
+        <strong>Mensagens:</strong> {{ conversation.messagesCount or '-' }} |
+        <strong>Última:</strong> {{ conversation.lastMessageTimestamp | ts_br }}
+      </p>
+    {% endif %}
+
+    <form method="get" style="margin-bottom: 12px;">
+      <label>
+        Tipo:
+        <select name="entry_type">
+          <option value="">Todos</option>
+          {% for item in entry_types %}
+            <option value="{{ item }}" {% if selected_entry_type == item %}selected{% endif %}>{{ item }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>
+        <input type="checkbox" name="show_events" value="1" {% if show_events %}checked{% endif %}/>
+        Mostrar eventos de sistema
+      </label>
+      <button type="submit">Filtrar</button>
+    </form>
+
+    {% for m in messages %}
+      {% set role = (m.sender.role if m.sender else 'Unknown') %}
+      {% set appType = (m.sender.appType if m.sender else '') %}
+      {% set side = 'right' if role in ['Agent'] else 'left' %}
+      {% set cls = 'from-agent' if role in ['Agent'] else ('from-user' if role in ['EndUser'] else 'from-system') %}
+      <div class="row {{ side }}">
+        <div class="bubble {{ cls }}">
+          <div><strong>{{ m.entryType or 'Unknown' }}</strong></div>
+          {% if m.messageText %}
+            <div>{{ m.messageText | e }}</div>
+          {% endif %}
+          {% if m.attachmentCount %}
+            <div>Anexos: {{ m.attachmentCount }}</div>
+          {% endif %}
+          {% if m.relatedRecords %}
+            <div>Related: {{ m.relatedRecords | join(', ') }}</div>
+          {% endif %}
+          <div class="meta">
+            {{ role }} {{ appType }} •
+            {% if m.transcriptedTimestamp %}
+              {{ m.transcriptedTimestamp | ts_br }}
+            {% elif m.serverReceivedTimestamp %}
+              {{ m.serverReceivedTimestamp | ts_br }}
+            {% elif m.clientTimestamp %}
+              {{ m.clientTimestamp | ts_br }}
+            {% endif %}
+          </div>
+          {% if m.rawEntry %}
+            <details>
+              <summary>Raw entry</summary>
+              <pre>{{ m.rawEntry | pretty_json }}</pre>
+            </details>
+          {% endif %}
+        </div>
+      </div>
+    {% else %}
+      <p>Nenhuma mensagem.</p>
+    {% endfor %}
+  </div>
+{% endblock %}
