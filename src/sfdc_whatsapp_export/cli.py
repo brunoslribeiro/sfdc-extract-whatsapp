@@ -41,6 +41,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--api-version", default="62.0", help="Versao da API (ex.: 62.0)")
     p.add_argument("--entries-api", choices=["conversation-data", "connect"], default="conversation-data", help="API usada para baixar entries")
     p.add_argument("--legacy-only", action="store_true", help="Forca o uso apenas da API antiga via Connect")
+    p.add_argument("--legacy-discovery", choices=["messaging-session", "conversation"], default="messaging-session", help="Define como o modo legado descobre as conversas")
     p.add_argument("--conversation-api-base-url", default=os.getenv("SF_CONVERSATION_API_BASE_URL", "https://api.salesforce.com/platform/engagement/v1.0"), help="Base URL da Conversation Data API")
     p.add_argument("--no-legacy-fallback", action="store_true", help="Desabilita fallback automatico para Connect ao usar conversation-data")
     p.add_argument("--max-requests-per-minute", type=int, default=int(os.getenv("SF_MAX_REQUESTS_PER_MINUTE", "90")), help="Limite de requisicoes por minuto para respeitar rate limit")
@@ -121,6 +122,7 @@ def main() -> None:
         window_size_minutes=args.window_size_minutes,
         api_version=args.api_version,
         entries_api=entries_api,
+        legacy_discovery=args.legacy_discovery,
         record_limit=(args.record_limit if args.record_limit is not None else args.page_size),
         write_ndjson=args.ndjson,
         entries_csv=Path(args.entries_csv) if args.entries_csv else None,

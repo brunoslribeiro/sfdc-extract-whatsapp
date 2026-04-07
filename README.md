@@ -394,6 +394,12 @@ Exportação usando apenas a API antiga via Connect com janela explícita:
 python main.py --legacy-only --channel "WhatsApp SAS" --start-datetime "2026-04-07T00:00:00Z" --end-datetime "2026-04-07T01:00:00Z" --record-limit 1000
 ```
 
+Exportação usando apenas a API antiga via Connect, mas descobrindo as conversas por `Conversation`:
+
+```bash
+python main.py --legacy-only --legacy-discovery conversation --start-datetime "2026-04-07T00:00:00Z" --end-datetime "2026-04-07T01:00:00Z" --record-limit 1000
+```
+
 Exportação usando janela explícita com CSV agregado por entry:
 
 ```bash
@@ -420,6 +426,12 @@ CSV agregado por entry usando apenas a API antiga via Connect com janela explíc
 python main.py --legacy-only --channel "WhatsApp SAS" --start-datetime "2026-04-07T00:00:00Z" --end-datetime "2026-04-07T01:00:00Z" --record-limit 1000 --entries-csv all_conversations.csv
 ```
 
+CSV agregado por entry usando a API antiga via Connect com discovery por `Conversation`:
+
+```bash
+python main.py --legacy-only --legacy-discovery conversation --start-datetime "2026-04-07T00:00:00Z" --end-datetime "2026-04-07T01:00:00Z" --record-limit 1000 --entries-csv all_conversations.csv
+```
+
 No Docker:
 
 ```bash
@@ -438,6 +450,7 @@ Parâmetros relevantes:
 - `--out`: diretório de saída;
 - `--entries-api`: `conversation-data` (default) ou `connect`;
 - `--legacy-only`: atalho para forçar somente a API antiga via `connect`;
+- `--legacy-discovery`: no modo legado, escolhe discovery por `messaging-session` (default) ou `conversation`;
 - `--conversation-api-base-url`: base da Conversation Data API. Default: `https://api.salesforce.com/platform/engagement/v1.0`;
 - `--record-limit`: quantidade máxima de entries por chamada, normalmente de `1` a `1000`;
 - `--max-requests-per-minute`: limita a cadência das chamadas para respeitar rate limit, default `90`;
@@ -451,6 +464,11 @@ Parâmetros relevantes:
 - `--no-legacy-fallback`: falha imediatamente se a Conversation Data API não estiver disponível, sem tentar o endpoint legado;
 - `--created-only`: afeta apenas o fluxo legado com `MessagingSession`;
 - `--use-systemmodstamp`: afeta apenas o fluxo legado com `MessagingSession`.
+
+Observação sobre o legado:
+
+- `--channel` só é filtro real quando o legado usa `--legacy-discovery messaging-session`;
+- com `--legacy-discovery conversation`, o download continua via `connect`, mas a discovery passa a usar `Conversation`, então `--channel` não é aplicado como filtro efetivo.
 
 ## Saída da exportação
 
