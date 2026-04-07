@@ -2,7 +2,7 @@
 
 Ferramenta em Python para:
 
-- consultar `Conversation` no Salesforce por janela de dias;
+- consultar `Conversation` no Salesforce por janela temporal;
 - baixar as mensagens de cada conversa via nova Conversation Data GET API `GET /conversation-entries`;
 - salvar os payloads em JSON;
 - importar os dados para MongoDB;
@@ -52,7 +52,8 @@ SOQL base do fluxo principal:
 ```sql
 SELECT Id, StartTime, EndTime, LastModifiedDate, ConversationIdentifier
 FROM Conversation
-WHERE LastModifiedDate = LAST_N_DAYS:<dias>
+WHERE LastModifiedDate >= <window_start>
+  AND LastModifiedDate < <window_end>
 ```
 
 Depois disso, cada conversa é baixada pela API:
@@ -64,6 +65,13 @@ https://api.salesforce.com/platform/engagement/v1.0/conversation-entries?convers
 O projeto preserva o payload completo das entries. Se a org ou o token ainda não suportarem essa API, a CLI pode fazer fallback para o endpoint legado do Connect REST.
 
 Se a API retornar `nextPageToken`, o cliente consolida todas as páginas em um único payload.
+
+O exportador pode trabalhar com:
+
+- janela relativa via `--days`;
+- janela explícita via `--start-datetime` e `--end-datetime`.
+
+Quando necessário, a janela total pode ser quebrada em sub-janelas com `--window-size-minutes`. Isso ajuda a deixar o pipeline mais previsível, facilita backfill histórico e reduz risco operacional em APIs com rate limit mais sensível.
 
 No fluxo legado `connect`, o projeto ainda consegue descobrir conversas via `MessagingSession` filtrando por canal e datas.
 
@@ -86,9 +94,9 @@ Os `ConversationIdentifier` são deduplicados antes do download.
 
 Para cada conversa, o projeto grava:
 
-- JSONs por conversa em `output/json/<ConversationIdentifier>.json`;
-- opcionalmente um NDJSON agregado em `output/json/all_conversations.ndjson`;
-- CSVs agregados em `output/csv/`;
+- JSONs por conversa em `output/json/run_YYYYmmdd_HHMMSS/<ConversationIdentifier>.json`;
+- opcionalmente um NDJSON agregado em `output/json/run_YYYYmmdd_HHMMSS/all_conversations.ndjson`;
+- CSVs agregados em `output/csv/run_YYYYmmdd_HHMMSS/`;
 - estado consolidado e stages de execução em `output/state/`;
 - logs da execução em `output/logs/run_YYYYmmdd_HHMMSS/`.
 
@@ -238,7 +246,7 @@ Nesse momento o Mongo e o viewer já estarão ativos, mas ainda sem dados import
 1. Execute a exportação:
 
 ```bash
-docker compose run --rm exporter --days 30 --record-limit 1000 --out /app/output --no-legacy-fallback
+docker compose run --rm exporter --days 1 --record-limit 1000 --no-legacy-fallback
 ```
 
 Esses comandos de Docker já estão em modo estrito da nova API. Se você alterar os resumos das conversas ou reexportar dados, rode o `importer` novamente antes de abrir o viewer.
@@ -272,13 +280,13 @@ docker compose down -v
 Exportar com NDJSON:
 
 ```bash
-docker compose run --rm exporter --days 30 --record-limit 1000 --out /app/output --ndjson --no-legacy-fallback
+docker compose run --rm exporter --days 1 --record-limit 1000 --ndjson --no-legacy-fallback
 ```
 
 Exportar com CSV agregado:
 
 ```bash
-docker compose run --rm exporter --days 30 --record-limit 1000 --out /app/output --entries-csv /app/output/all_conversations.csv --no-legacy-fallback
+docker compose run --rm exporter --days 1 --record-limit 1000 --entries-csv all_conversations.csv --no-legacy-fallback
 ```
 
 Importar informando manualmente o `sessions.csv`:
@@ -317,6 +325,18 @@ Exemplo com `.env`:
 
 ```bash
 python main.py --days 1 --record-limit 1000 --no-legacy-fallback
+```
+
+Exemplo com janela explícita:
+
+```bash
+python main.py --start-datetime "2026-04-01T00:00:00Z" --end-datetime "2026-04-02T00:00:00Z" --record-limit 1000 --no-legacy-fallback
+```
+
+Exemplo com janela explícita quebrada em blocos de 1 hora:
+
+```bash
+python main.py --start-datetime "2026-04-01T00:00:00Z" --end-datetime "2026-04-02T00:00:00Z" --window-size-minutes 60 --record-limit 1000 --no-legacy-fallback
 ```
 
 Exemplo passando client credentials por parâmetro:
@@ -362,6 +382,12 @@ Exportação usando a Conversation Data API com CSV agregado por entry:
 python main.py --days 1 --record-limit 1000 --entries-csv all_conversations.csv --no-legacy-fallback
 ```
 
+Exportação usando janela explícita com CSV agregado por entry:
+
+```bash
+python main.py --start-datetime "2026-04-01T00:00:00Z" --end-datetime "2026-04-02T00:00:00Z" --window-size-minutes 60 --record-limit 1000 --entries-csv all_conversations.csv --no-legacy-fallback
+```
+
 ### Comandos de exportação em CSV
 
 CSV agregado por entry, usando a pasta gerenciada `output/csv/`:
@@ -385,8 +411,11 @@ docker compose run --rm exporter --days 1 --record-limit 1000 --entries-csv all_
 Parâmetros relevantes:
 
 - `--channel`: valor de `ChannelName`, usado no fluxo legado com `MessagingSession`;
-- `--days`: janela usada em `LAST_N_DAYS`;
-- a mesma janela de `--days` também é enviada ao Connect como `startTimestamp` e `endTimestamp`, evitando baixar mensagens muito antigas da conversa;
+- `--days`: janela relativa quando `--start-datetime` e `--end-datetime` não forem informados;
+- `--start-datetime`: início da janela em ISO-8601 com timezone;
+- `--end-datetime`: fim da janela em ISO-8601 com timezone;
+- `--window-size-minutes`: divide a janela total em blocos menores de discovery;
+- a janela resolvida também é enviada ao endpoint de entries como `startTimestamp` e `endTimestamp`, evitando baixar mensagens fora do recorte;
 - `--api-version`: versão da API Salesforce, default `62.0`;
 - `--out`: diretório de saída;
 - `--entries-api`: `conversation-data` (default) ou `connect`;
@@ -411,17 +440,20 @@ Exemplo de estrutura:
 ```text
 output/
 |-- json/
-|   |-- 0NW....json
-|   |-- 0NW....json
-|   `-- all_conversations.ndjson
+|   `-- run_YYYYmmdd_HHMMSS/
+|       |-- 0NW....json
+|       |-- 0NW....json
+|       `-- all_conversations.ndjson
 |-- csv/
-|   |-- all_conversations.csv
-|   `-- sessions.csv
+|   `-- run_YYYYmmdd_HHMMSS/
+|       |-- all_conversations.csv
+|       `-- sessions.csv
 |-- state/
 |   |-- latest_state.json
 |   `-- run_YYYYmmdd_HHMMSS/
 |       |-- seen_conversations.json
 |       |-- skipped_conversations.json
+|       |-- windows.json
 |       |-- downloaded_conversations.json
 |       |-- failed_conversations.json
 |       `-- summary.json
@@ -436,14 +468,14 @@ output/
 
 Arquivos gerados:
 
-- `output/json/<ConversationIdentifier>.json`: payload bruto por conversa;
-- `output/json/all_conversations.ndjson`: uma linha por entry, se habilitado;
-- `output/csv/all_conversations.csv`: um registro por entry, se habilitado;
-- `output/csv/sessions.csv`: cópia opcional das `MessagingSession` consultadas para enriquecimento;
+- `output/json/run_YYYYmmdd_HHMMSS/<ConversationIdentifier>.json`: payload bruto por conversa;
+- `output/json/run_YYYYmmdd_HHMMSS/all_conversations.ndjson`: uma linha por entry, se habilitado;
+- `output/csv/run_YYYYmmdd_HHMMSS/all_conversations.csv`: um registro por entry, se habilitado;
+- `output/csv/run_YYYYmmdd_HHMMSS/sessions.csv`: cópia opcional das `MessagingSession` consultadas para enriquecimento;
 - `output/state/latest_state.json`: estado consolidado por `ConversationIdentifier`, usado para pular conversas sem mudança;
-- `output/state/run_YYYYmmdd_HHMMSS/`: stage da execução com listas de vistas, ignoradas, baixadas e falhas;
+- `output/state/run_YYYYmmdd_HHMMSS/`: stage da execução com listas de vistas, ignoradas, janelas executadas, baixadas e falhas;
 - `logs/run_YYYYmmdd_HHMMSS/identifiers.txt`: lista única de `ConversationIdentifier`;
-- `logs/run_YYYYmmdd_HHMMSS/params.json`: parâmetros e métricas da execução, incluindo `recordLimit`, `startTimestamp` e `endTimestamp`;
+- `logs/run_YYYYmmdd_HHMMSS/params.json`: parâmetros e métricas da execução, incluindo `recordLimit`, `startTimestamp`, `endTimestamp`, `windowStart`, `windowEnd` e `windowCount`;
 - `logs/run_YYYYmmdd_HHMMSS/errors.csv`: falhas por conversa durante o download;
 - `logs/run_YYYYmmdd_HHMMSS/summary.json`: resumo da execução.
 
