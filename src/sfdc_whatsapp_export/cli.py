@@ -21,6 +21,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--days", type=int, default=30, help="Janela de dias para LAST_N_DAYS")
     p.add_argument("--api-version", default="62.0", help="Versao da API (ex.: 62.0)")
     p.add_argument("--entries-api", choices=["conversation-data", "connect"], default="conversation-data", help="API usada para baixar entries")
+    p.add_argument("--legacy-only", action="store_true", help="Forca o uso apenas da API antiga via Connect")
     p.add_argument("--conversation-api-base-url", default=os.getenv("SF_CONVERSATION_API_BASE_URL", "https://api.salesforce.com/platform/engagement/v1.0"), help="Base URL da Conversation Data API")
     p.add_argument("--no-legacy-fallback", action="store_true", help="Desabilita fallback automatico para Connect ao usar conversation-data")
     p.add_argument("--max-requests-per-minute", type=int, default=int(os.getenv("SF_MAX_REQUESTS_PER_MINUTE", "90")), help="Limite de requisicoes por minuto para respeitar rate limit")
@@ -78,13 +79,14 @@ def main() -> None:
         raise SystemExit("--instance-url, env SF_INSTANCE_URL, ou derivacao a partir de --auth-url e obrigatorio")
 
     out_dir = Path(args.out)
+    entries_api = "connect" if args.legacy_only else args.entries_api
 
     client = SalesforceClient(
         instance_url=instance_url,
         access_token=access_token,
         api_version=args.api_version,
         conversation_api_base_url=args.conversation_api_base_url,
-        entries_api=args.entries_api,
+        entries_api=entries_api,
         legacy_fallback=(not args.no_legacy_fallback),
         max_requests_per_minute=args.max_requests_per_minute,
     )
@@ -94,7 +96,7 @@ def main() -> None:
         days=args.days,
         out_dir=out_dir,
         api_version=args.api_version,
-        entries_api=args.entries_api,
+        entries_api=entries_api,
         record_limit=(args.record_limit if args.record_limit is not None else args.page_size),
         write_ndjson=args.ndjson,
         entries_csv=Path(args.entries_csv) if args.entries_csv else None,

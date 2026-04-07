@@ -362,6 +362,12 @@ Exportação usando a Conversation Data API com CSV agregado por entry:
 python main.py --days 1 --record-limit 1000 --entries-csv all_conversations.csv --no-legacy-fallback
 ```
 
+Exportação usando apenas a API antiga via Connect:
+
+```bash
+python main.py --legacy-only --channel "WhatsApp SAS" --days 1 --record-limit 1000
+```
+
 ### Comandos de exportação em CSV
 
 CSV agregado por entry, usando a pasta gerenciada `output/csv/`:
@@ -390,6 +396,7 @@ Parâmetros relevantes:
 - `--api-version`: versão da API Salesforce, default `62.0`;
 - `--out`: diretório de saída;
 - `--entries-api`: `conversation-data` (default) ou `connect`;
+- `--legacy-only`: atalho para forçar somente a API antiga via `connect`;
 - `--conversation-api-base-url`: base da Conversation Data API. Default: `https://api.salesforce.com/platform/engagement/v1.0`;
 - `--record-limit`: quantidade máxima de entries por chamada, normalmente de `1` a `1000`;
 - `--max-requests-per-minute`: limita a cadência das chamadas para respeitar rate limit, default `90`;
