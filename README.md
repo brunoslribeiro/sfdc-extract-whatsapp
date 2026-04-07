@@ -388,6 +388,12 @@ Exportação usando apenas a API antiga via Connect:
 python main.py --legacy-only --channel "WhatsApp SAS" --days 1 --record-limit 1000
 ```
 
+Exportação usando apenas a API antiga via Connect com janela explícita:
+
+```bash
+python main.py --legacy-only --channel "WhatsApp SAS" --start-datetime "2026-04-07T00:00:00Z" --end-datetime "2026-04-07T01:00:00Z" --record-limit 1000
+```
+
 Exportação usando janela explícita com CSV agregado por entry:
 
 ```bash
@@ -406,6 +412,12 @@ CSV agregado por entry com enriquecimento opcional de sessões:
 
 ```bash
 python main.py --days 1 --record-limit 1000 --entries-csv all_conversations.csv --with-session-enrichment --dump-sessions sessions.csv --no-legacy-fallback
+```
+
+CSV agregado por entry usando apenas a API antiga via Connect com janela explícita:
+
+```bash
+python main.py --legacy-only --channel "WhatsApp SAS" --start-datetime "2026-04-07T00:00:00Z" --end-datetime "2026-04-07T01:00:00Z" --record-limit 1000 --entries-csv all_conversations.csv
 ```
 
 No Docker:
