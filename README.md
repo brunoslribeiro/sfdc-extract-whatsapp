@@ -613,6 +613,8 @@ docker compose run --rm importer --dir /app/output
 O CSV agregado é pensado para importação em banco e BI:
 
 - colunas textuais e colunas JSON são normalizadas em linha única, sem quebras de linha;
+- o separador do CSV é `;`;
+- colunas textuais saem sempre entre aspas duplas;
 - os timestamps originais continuam no CSV;
 - colunas auxiliares em UTC também são geradas:
   - `clientTimestampUtc`

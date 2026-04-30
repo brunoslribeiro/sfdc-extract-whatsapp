@@ -36,8 +36,38 @@
       <div class="row {{ side }}">
         <div class="bubble {{ cls }}">
           <div><strong>{{ m.entryType or 'Unknown' }}</strong></div>
+          {% if m.identifier %}
+            <div class="meta">entry_identifier: {{ m.identifier }}</div>
+          {% endif %}
           {% if m.messageText %}
             <div>{{ m.messageText | e }}</div>
+          {% endif %}
+          {% if m.menuText or m.menuOptions or m.menuOptionsText or m.selectedOptionsText %}
+            <div class="wa-menu">
+              {% if m.menuText %}
+                <div class="wa-menu-title">{{ m.menuText | e }}</div>
+              {% endif %}
+              {% if m.menuOptions %}
+                <div class="wa-menu-options">
+                  {% for option in m.menuOptions %}
+                    {% set title_item = option.titleItem if option.titleItem else option %}
+                    {% set option_text = title_item.title or title_item.text or title_item.subTitle or title_item.secondarySubTitle or title_item.tertiarySubTitle or option.optionIdentifier %}
+                    {% if option_text %}
+                      <div class="wa-menu-option">{{ option_text | e }}</div>
+                    {% endif %}
+                  {% endfor %}
+                </div>
+              {% elif m.menuOptionsText %}
+                <div class="wa-menu-options">
+                  {% for option_text in m.menuOptionsText.split(' | ') %}
+                    <div class="wa-menu-option">{{ option_text | e }}</div>
+                  {% endfor %}
+                </div>
+              {% endif %}
+              {% if m.selectedOptionsText %}
+                <div class="wa-menu-selected">Selecionado: {{ m.selectedOptionsText | e }}</div>
+              {% endif %}
+            </div>
           {% endif %}
           {% if m.attachmentCount %}
             <div>Anexos: {{ m.attachmentCount }}</div>

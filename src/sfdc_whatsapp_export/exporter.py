@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -51,6 +52,10 @@ def load_state(path: Path) -> dict[str, dict]:
 def write_json(path: Path, data: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+CSV_DELIMITER = ";"
+CSV_QUOTING = csv.QUOTE_NONNUMERIC
 
 
 def resolve_managed_output_path(path: Optional[Path], managed_dir: Path) -> Optional[Path]:
@@ -279,8 +284,6 @@ def split_windows(window_start: datetime, window_end: datetime, window_size_minu
 
 
 def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict:
-    import csv
-
     ensure_dir(config.out_dir)
     json_root_dir = config.out_dir / "json"
     csv_root_dir = config.out_dir / "csv"
@@ -491,7 +494,7 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
         if sessions_rows:
             sessions_csv = run_dir / "sessions.csv"
             with open(sessions_csv, "w", encoding="utf-8", newline="") as fp:
-                writer = csv.writer(fp)
+                writer = csv.writer(fp, delimiter=CSV_DELIMITER, quoting=CSV_QUOTING)
                 writer.writerow([
                     "MessagingSessionId",
                     "ChannelName",
@@ -550,7 +553,7 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
         csv_path = dump_sessions_csv_path
         csv_path.parent.mkdir(parents=True, exist_ok=True)
         with open(csv_path, "w", encoding="utf-8", newline="") as fp:
-            writer = csv.writer(fp)
+            writer = csv.writer(fp, delimiter=CSV_DELIMITER, quoting=CSV_QUOTING)
             writer.writerow([
                 "MessagingSessionId",
                 "ChannelName",
@@ -582,6 +585,8 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
         csv_fp = open(csv_path, "w", encoding="utf-8", newline="")
         csv_writer = csv.DictWriter(
             csv_fp,
+            delimiter=CSV_DELIMITER,
+            quoting=CSV_QUOTING,
             fieldnames=[
                 "conversationId",
                 "identifier",
@@ -622,7 +627,7 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
     err_fp = None
     if run_dir is not None:
         err_fp = open(run_dir / "errors.csv", "w", encoding="utf-8", newline="")
-        err_writer = csv.writer(err_fp)
+        err_writer = csv.writer(err_fp, delimiter=CSV_DELIMITER, quoting=CSV_QUOTING)
         err_writer.writerow(["ConversationIdentifier", "Error"])
 
     downloaded_rows: list[dict[str, object]] = []
