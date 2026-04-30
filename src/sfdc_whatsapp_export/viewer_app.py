@@ -59,6 +59,7 @@ def create_app(cfg: ViewerConfig) -> Flask:
         q = request.args.get("q", "").strip()
         phone = request.args.get("phone", "").strip()
         text = request.args.get("text", "").strip()
+        entry_identifier = request.args.get("entry_identifier", "").strip()
         limit = min(int(request.args.get("limit", 100)), 1000)
         query = {}
         if phone:
@@ -67,12 +68,33 @@ def create_app(cfg: ViewerConfig) -> Flask:
             query["conversationId"] = {"$regex": q}
         if text:
             query["lastMessageText"] = {"$regex": text, "$options": "i"}
+        if entry_identifier:
+            matching_conversation_ids = msgs.distinct(
+                "conversationId",
+                {"identifier": {"$regex": entry_identifier, "$options": "i"}},
+            )
+            if q:
+                q_lower = q.lower()
+                matching_conversation_ids = [
+                    cid
+                    for cid in matching_conversation_ids
+                    if q_lower in str(cid).lower()
+                ]
+            query["conversationId"] = {"$in": matching_conversation_ids}
         items = list(convs.find(query).sort([
             ("lastMessageTimestamp", -1),
             ("lastEndUserTimestamp", -1),
             ("conversationId", 1),
         ]).limit(limit))
-        return render_template("index.html", items=items, q=q, phone=phone, text=text, limit=limit)
+        return render_template(
+            "index.html",
+            items=items,
+            q=q,
+            phone=phone,
+            text=text,
+            entry_identifier=entry_identifier,
+            limit=limit,
+        )
 
     @app.get("/conversation/<conversation_id>")
     def conversation(conversation_id: str):

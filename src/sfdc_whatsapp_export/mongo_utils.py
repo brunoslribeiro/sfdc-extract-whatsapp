@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Iterable, Dict
 
-from pymongo import MongoClient, ASCENDING, DESCENDING, errors
+from pymongo import MongoClient, ASCENDING, DESCENDING, ReplaceOne, errors
 
 
 @dataclass
@@ -84,7 +84,7 @@ def _extract_message_text(entry: dict) -> Optional[str]:
     if message_text:
         return message_text
 
-    payload = entry.get("entryPayload") or {}
+    payload = _entry_payload(entry)
     abstract_message = payload.get("abstractMessage") or {}
     static_content = abstract_message.get("staticContent") or {}
     if static_content.get("text"):
@@ -128,11 +128,77 @@ def _extract_sender_app_type(entry: dict) -> Optional[str]:
 
 
 def _extract_attachment_count(entry: dict) -> int:
-    payload = entry.get("entryPayload") or {}
+    payload = _entry_payload(entry)
     abstract_message = payload.get("abstractMessage") or {}
     static_content = abstract_message.get("staticContent") or {}
     attachments = static_content.get("attachments") or []
     return len(attachments) if isinstance(attachments, list) else 0
+
+
+def _title_item_text(item: object) -> Optional[str]:
+    if not isinstance(item, dict):
+        return None
+    for key in ("title", "text", "subTitle", "secondarySubTitle", "tertiarySubTitle"):
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _choice_option_title(option: object) -> Optional[str]:
+    if not isinstance(option, dict):
+        return None
+    for key in ("titleItem", "optionTitle"):
+        title = _title_item_text(option.get(key))
+        if title:
+            return title
+    return _title_item_text(option)
+
+
+def _entry_payload(entry: dict) -> dict:
+    payload = entry.get("entryPayload") or {}
+    if isinstance(payload, str):
+        try:
+            parsed = json.loads(payload)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _extract_menu_fields(entry: dict) -> dict[str, object]:
+    payload = _entry_payload(entry)
+    abstract_message = payload.get("abstractMessage") or {}
+    choices = abstract_message.get("choices") or {}
+    choices_response = abstract_message.get("choicesResponse") or {}
+
+    option_items = choices.get("optionItems") if isinstance(choices, dict) else None
+    selected_options = choices_response.get("selectedOptions") if isinstance(choices_response, dict) else None
+    option_titles = [
+        title
+        for title in (_choice_option_title(option) for option in (option_items or []))
+        if title
+    ]
+    selected_titles = [
+        title
+        for title in (_choice_option_title(option) for option in (selected_options or []))
+        if title
+    ]
+    selected_identifiers = [
+        option.get("optionIdentifier")
+        for option in (selected_options or [])
+        if isinstance(option, dict) and option.get("optionIdentifier")
+    ]
+
+    return {
+        "menuText": choices.get("text") if isinstance(choices, dict) else None,
+        "menuFormatType": choices.get("formatType") if isinstance(choices, dict) else None,
+        "menuOptionsText": " | ".join(option_titles) if option_titles else None,
+        "menuOptions": option_items or [],
+        "selectedOptionsText": " | ".join(selected_titles) if selected_titles else None,
+        "selectedOptionIdentifiers": selected_identifiers,
+        "selectedOptions": selected_options or [],
+    }
 
 
 def import_directory(
@@ -259,6 +325,7 @@ def import_directory(
                 "entryType": e.get("entryType"),
                 "messageText": _extract_message_text(e),
                 "attachmentCount": _extract_attachment_count(e),
+                **_extract_menu_fields(e),
                 "clientTimestamp": e.get("clientTimestamp"),
                 "serverReceivedTimestamp": e.get("serverReceivedTimestamp"),
                 "transcriptedTimestamp": e.get("transcriptedTimestamp"),
@@ -268,17 +335,12 @@ def import_directory(
                 "sortTimestamp": sort_ts,
                 "rawEntry": e,
             }
-            bulk.append(doc)
+            bulk.append(ReplaceOne({"_id": doc["_id"]}, doc, upsert=True))
 
         if bulk:
-            # Use unordered insert_many to skip duplicates quickly
             try:
-                msgs.insert_many(bulk, ordered=False)
-                inserted += len(bulk)
-            except errors.BulkWriteError as bwe:
-                # Count inserted ones; duplicates are ignored
-                ins = sum(1 for w in bwe.details.get("writeErrors", []) if w.get("code") == 11000)
-                inserted += max(0, len(bulk) - ins)
+                result = msgs.bulk_write(bulk, ordered=False)
+                inserted += result.upserted_count + result.modified_count
             except errors.PyMongoError:
                 pass
 

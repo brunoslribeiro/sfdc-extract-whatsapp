@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import json
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -21,6 +22,7 @@ class ExportConfig:
     window_size_minutes: Optional[int] = None
     api_version: str = "62.0"
     entries_api: str = "conversation-data"
+    legacy_discovery: str = "messaging-session"
     record_limit: Optional[int] = None
     write_ndjson: bool = False
     entries_csv: Optional[Path] = None
@@ -50,6 +52,10 @@ def load_state(path: Path) -> dict[str, dict]:
 def write_json(path: Path, data: object) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+CSV_DELIMITER = ";"
+CSV_QUOTING = csv.QUOTE_NONNUMERIC
 
 
 def resolve_managed_output_path(path: Optional[Path], managed_dir: Path) -> Optional[Path]:
@@ -278,8 +284,6 @@ def split_windows(window_start: datetime, window_end: datetime, window_size_minu
 
 
 def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict:
-    import csv
-
     ensure_dir(config.out_dir)
     json_root_dir = config.out_dir / "json"
     csv_root_dir = config.out_dir / "csv"
@@ -320,8 +324,12 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
     created_within = 0
     modified_within = 0
     updated_only = 0
+    use_conversation_discovery = (
+        config.entries_api == "conversation-data"
+        or (config.entries_api == "connect" and config.legacy_discovery == "conversation")
+    )
 
-    if config.entries_api == "conversation-data":
+    if use_conversation_discovery:
         print(
             f"Consultando SOQL em Conversation de {format_soql_datetime(window_start)} "
             f"até {format_soql_datetime(window_end)} em {len(windows)} janela(s)..."
@@ -333,7 +341,7 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
         )
 
     for idx, (chunk_start, chunk_end) in enumerate(windows, start=1):
-        if config.entries_api == "conversation-data":
+        if use_conversation_discovery:
             window_records = client.soql(build_conversation_query(chunk_start, chunk_end))
         else:
             window_records = client.soql(
@@ -356,7 +364,7 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
         )
         records.extend(window_records)
 
-        if config.entries_api == "conversation-data":
+        if use_conversation_discovery:
             for r in window_records:
                 cid = r.get("ConversationIdentifier")
                 if cid and cid not in seen:
@@ -435,7 +443,7 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
                     end_user_key or "",
                 ))
 
-    if config.enrich_messaging_sessions and config.entries_api == "conversation-data" and identifiers:
+    if config.enrich_messaging_sessions and use_conversation_discovery and identifiers:
         print("Consultando MessagingSession para enriquecimento opcional...")
         enriched_rows: list[tuple] = []
         for chunk in _chunked(identifiers, 200):
@@ -486,7 +494,7 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
         if sessions_rows:
             sessions_csv = run_dir / "sessions.csv"
             with open(sessions_csv, "w", encoding="utf-8", newline="") as fp:
-                writer = csv.writer(fp)
+                writer = csv.writer(fp, delimiter=CSV_DELIMITER, quoting=CSV_QUOTING)
                 writer.writerow([
                     "MessagingSessionId",
                     "ChannelName",
@@ -517,7 +525,8 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
             "jsonOutDir": str(json_out_dir),
             "csvOutDir": str(csv_out_dir),
             "instanceUrl": getattr(client, "instance_url", None),
-            "sourceObject": ("Conversation" if config.entries_api == "conversation-data" else "MessagingSession"),
+            "sourceObject": ("Conversation" if use_conversation_discovery else "MessagingSession"),
+            "legacyDiscovery": (config.legacy_discovery if config.entries_api == "connect" else None),
             "sourceRecords": total_records,
             "uniqueIdentifiers": len(identifiers),
             "createdWithinWindow": created_within,
@@ -532,7 +541,7 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
             "sessionEnrichmentEnabled": config.enrich_messaging_sessions,
             "sessionRows": len(sessions_rows),
         }
-        if config.entries_api != "conversation-data":
+        if config.entries_api == "connect" and config.legacy_discovery != "conversation":
             meta["channel"] = config.channel
         (run_dir / "params.json").write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -544,7 +553,7 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
         csv_path = dump_sessions_csv_path
         csv_path.parent.mkdir(parents=True, exist_ok=True)
         with open(csv_path, "w", encoding="utf-8", newline="") as fp:
-            writer = csv.writer(fp)
+            writer = csv.writer(fp, delimiter=CSV_DELIMITER, quoting=CSV_QUOTING)
             writer.writerow([
                 "MessagingSessionId",
                 "ChannelName",
@@ -556,7 +565,7 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
             ])
             writer.writerows(sessions_rows)
 
-    source_label = "Conversations" if config.entries_api == "conversation-data" else "Sessões"
+    source_label = "Conversations" if use_conversation_discovery else "Sessões"
     print(f"{source_label}: {total_records}, identifiers únicos: {len(identifiers)}")
     print(
         f"Encontradas {len(identifiers)} conversa(s) únicas. "
@@ -576,6 +585,8 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
         csv_fp = open(csv_path, "w", encoding="utf-8", newline="")
         csv_writer = csv.DictWriter(
             csv_fp,
+            delimiter=CSV_DELIMITER,
+            quoting=CSV_QUOTING,
             fieldnames=[
                 "conversationId",
                 "identifier",
@@ -616,7 +627,7 @@ def export_conversations(client: SalesforceClient, config: ExportConfig) -> dict
     err_fp = None
     if run_dir is not None:
         err_fp = open(run_dir / "errors.csv", "w", encoding="utf-8", newline="")
-        err_writer = csv.writer(err_fp)
+        err_writer = csv.writer(err_fp, delimiter=CSV_DELIMITER, quoting=CSV_QUOTING)
         err_writer.writerow(["ConversationIdentifier", "Error"])
 
     downloaded_rows: list[dict[str, object]] = []
