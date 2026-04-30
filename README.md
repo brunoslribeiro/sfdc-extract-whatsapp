@@ -64,6 +64,8 @@ https://api.salesforce.com/platform/engagement/v1.0/conversation-entries?convers
 
 O projeto preserva o payload completo das entries. Se a org ou o token ainda não suportarem essa API, a CLI pode fazer fallback para o endpoint legado do Connect REST.
 
+Os metadados de menus interativos do WhatsApp (`choices`, `optionItems` e `choicesResponse`) dependem do payload da nova Conversation Data API. No fluxo legado `connect`, esses campos podem não existir no retorno e, nesse caso, o CSV/importador/viewer não conseguem reconstruir as opções de menu a partir do dado legado.
+
 Se a API retornar `nextPageToken`, o cliente consolida todas as páginas em um único payload.
 
 O exportador pode trabalhar com:
@@ -615,6 +617,7 @@ O CSV agregado é pensado para importação em banco e BI:
 - colunas textuais e colunas JSON são normalizadas em linha única, sem quebras de linha;
 - o separador do CSV é `;`;
 - colunas textuais saem sempre entre aspas duplas;
+- campos de menu interativo do WhatsApp só são preenchidos quando a conversa foi baixada pela nova Conversation Data API, pois o endpoint legado `connect` pode não retornar `choices`/`choicesResponse`;
 - os timestamps originais continuam no CSV;
 - colunas auxiliares em UTC também são geradas:
   - `clientTimestampUtc`
